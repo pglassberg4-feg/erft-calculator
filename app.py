@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 
-st.set_page_config(page_title="ERFT Multi-Account Dashboard", layout="wide")
+st.set_page_config(page_title="ERFT Hardened System", layout="wide")
 
-st.title("🧠 ERFT Multi-Account Diagnostic System")
+st.title("🧠 ERFT Multi-Account Diagnostic System (Hardened)")
 
 # -------------------------
-# SESSION STATE INIT
+# DEFAULT DATA STRUCTURE
 # -------------------------
 if "data" not in st.session_state:
     st.session_state.data = pd.DataFrame({
@@ -31,14 +32,14 @@ growth_types = ["Fixed","Indexed","Variable"]
 yesno = ["Yes","No"]
 
 # -------------------------
-# DATA EDITOR (MULTI-ACCOUNT INPUT)
+# INPUT TABLE
 # -------------------------
-st.subheader("📥 Client Accounts")
+st.subheader("📥 Client Accounts (Edit Table)")
 
-edited_df = st.data_editor(
+df = st.data_editor(
     st.session_state.data,
     num_rows="dynamic",
-    use_container_width=True,
+    width="stretch",
     column_config={
         "Account": st.column_config.SelectboxColumn("Account", options=account_types),
         "TaxType": st.column_config.SelectboxColumn("Tax Type", options=tax_types),
@@ -46,78 +47,87 @@ edited_df = st.data_editor(
         "GrowthType": st.column_config.SelectboxColumn("Growth Type", options=growth_types),
         "Loan": st.column_config.SelectboxColumn("Loan", options=yesno),
         "Income": st.column_config.SelectboxColumn("Income", options=yesno),
+        "Value": st.column_config.NumberColumn("Value ($)", min_value=0),
+        "FeePct": st.column_config.NumberColumn("Fee %", min_value=0, max_value=1),
+        "PenaltyPct": st.column_config.NumberColumn("Penalty %", min_value=0, max_value=1),
     }
 )
 
-st.session_state.data = edited_df
-
-df = edited_df.copy()
+st.session_state.data = df
 
 # -------------------------
-# SAFETY CHECK
+# SAFETY: EMPTY CHECK
 # -------------------------
 if df.empty:
-    st.warning("Add at least one account to generate ERFT analysis.")
+    st.warning("Add at least one account to generate analysis.")
     st.stop()
 
 # -------------------------
-# SCORING FUNCTIONS
+# DATA CLEANING (CRITICAL HARDENING LAYER)
 # -------------------------
-def risk(g): 
+df = df.copy()
+
+def safe_num(col):
+    return pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+df["Value"] = safe_num("Value")
+df["FeePct"] = safe_num("FeePct")
+df["PenaltyPct"] = safe_num("PenaltyPct")
+
+df["TaxType"] = df["TaxType"].fillna("Pre-tax")
+df["GrowthType"] = df["GrowthType"].fillna("Fixed")
+df["AgeRule"] = df["AgeRule"].fillna("None")
+
+# -------------------------
+# SCORING ENGINE (SAFE)
+# -------------------------
+def risk(g):
     return 3 if g == "Variable" else 2 if g == "Indexed" else 1
 
-def fees(f): 
+def fees(f):
+    f = 0 if pd.isna(f) else f
     return 3 if f > 0.01 else 2 if f > 0.005 else 1
 
-def taxes(t): 
+def taxes(t):
     return 3 if t == "Pre-tax" else 2 if t == "After-tax" else 1
 
-def flex(p, a): 
+def flex(p, a):
+    p = 0 if pd.isna(p) else p
     if p > 0:
         return 3
-    elif a != "None":
+    if a != "None":
         return 2
     return 1
 
-# -------------------------
-# APPLY SCORING
-# -------------------------
-risk_scores = []
-fee_scores = []
-tax_scores = []
-flex_scores = []
-total_scores = []
+risk_scores, fee_scores, tax_scores, flex_scores, totals = [], [], [], [], []
 
 for _, row in df.iterrows():
-    r = risk(row.get("GrowthType","Fixed"))
-    f = fees(row.get("FeePct",0))
-    t = taxes(row.get("TaxType","Pre-tax"))
-    fl = flex(row.get("PenaltyPct",0), row.get("AgeRule","None"))
+    r = risk(row["GrowthType"])
+    f = fees(row["FeePct"])
+    t = taxes(row["TaxType"])
+    fl = flex(row["PenaltyPct"], row["AgeRule"])
 
     risk_scores.append(r)
     fee_scores.append(f)
     tax_scores.append(t)
     flex_scores.append(fl)
-
-    total_scores.append(r + f + t + fl)
+    totals.append(r + f + t + fl)
 
 df["Risk"] = risk_scores
 df["FeesScore"] = fee_scores
 df["TaxScore"] = tax_scores
 df["FlexScore"] = flex_scores
-df["ERFT_Total"] = total_scores
+df["ERFT_Total"] = totals
 
 # -------------------------
-# PORTFOLIO METRICS
+# PORTFOLIO CALCS (SAFE)
 # -------------------------
-df["Value"] = pd.to_numeric(df["Value"], errors="coerce").fillna(0)
-
 total_value = df["Value"].sum()
 
-weighted_erft = (
-    (df["ERFT_Total"] * df["Value"]).sum() / total_value
-    if total_value > 0 else 0
-)
+if total_value > 0:
+    weighted_erft = (df["ERFT_Total"] * df["Value"]).sum() / total_value
+else:
+    weighted_erft = 0
 
 opportunity_gap = max(0, weighted_erft - 4)
 
@@ -125,13 +135,21 @@ opportunity_gap = max(0, weighted_erft - 4)
 # RECOMMENDATION ENGINE
 # -------------------------
 if weighted_erft >= 11:
-    rec = "🔴 URGENT: Major restructuring recommended"
+    rec = "🔴 URGENT: Structural redesign required"
 elif weighted_erft >= 8:
-    rec = "🟠 High priority review & repositioning opportunity"
+    rec = "🟠 High priority optimization opportunity"
 elif weighted_erft >= 5:
-    rec = "🟡 Moderate optimization potential"
+    rec = "🟡 Moderate improvement potential"
 else:
-    rec = "🟢 Low friction household structure"
+    rec = "🟢 Low-friction household structure"
+
+# -------------------------
+# MISSING DATA WARNING SYSTEM
+# -------------------------
+missing_flags = df[
+    (df["Account"].isna()) |
+    (df["Value"] == 0)
+]
 
 # -------------------------
 # DASHBOARD
@@ -139,42 +157,50 @@ else:
 st.divider()
 st.subheader("📊 Household Summary")
 
-col1, col2, col3 = st.columns(3)
+c1, c2, c3 = st.columns(3)
 
-col1.metric("Total Value", f"${total_value:,.0f}")
-col2.metric("Weighted ERFT Score", f"{weighted_erft:.2f}")
-col3.metric("Opportunity Gap", f"{opportunity_gap:.2f}")
+c1.metric("Total Value", f"${total_value:,.0f}")
+c2.metric("Weighted ERFT", f"{weighted_erft:.2f}")
+c3.metric("Opportunity Gap", f"{opportunity_gap:.2f}")
 
 st.subheader("🧠 Recommendation")
 st.write(rec)
 
 # -------------------------
-# ACCOUNT BREAKDOWN
+# DATA QUALITY PANEL (HARDENING FEATURE)
 # -------------------------
-st.subheader("📋 Account-Level ERFT Breakdown")
-st.dataframe(df, use_container_width=True)
+st.subheader("⚠️ Data Quality Check")
+
+if len(missing_flags) > 0:
+    st.error("Some accounts are missing key data (Account or Value). Fix before presenting.")
+    st.dataframe(missing_flags, width="stretch")
+else:
+    st.success("All accounts are complete.")
 
 # -------------------------
-# INSIGHT BOX
+# ACCOUNT TABLE
 # -------------------------
-st.subheader("🔎 Key Insight")
+st.subheader("📋 Account Breakdown (ERFT Engine Output)")
+st.dataframe(df, width="stretch")
 
-highest = df.loc[df["ERFT_Total"].idxmax()] if not df.empty else None
-
-if highest is not None:
+# -------------------------
+# TOP OPPORTUNITY TARGET
+# -------------------------
+if not df.empty:
+    top = df.loc[df["ERFT_Total"].idxmax()]
     st.info(
-        f"Highest friction account: {highest['Account']} "
-        f"(ERFT {highest['ERFT_Total']}) — primary optimization target."
+        f"Top optimization target: {top['Account']} "
+        f"(ERFT {top['ERFT_Total']}, ${top['Value']:,.0f})"
     )
 
 # -------------------------
-# DOWNLOAD REPORT
+# EXPORT
 # -------------------------
 csv = df.to_csv(index=False).encode("utf-8")
 
 st.download_button(
-    "⬇️ Download Client ERFT Report (CSV)",
+    "⬇️ Download ERFT Report (CSV)",
     data=csv,
-    file_name="erft_report.csv",
+    file_name="ERFT_Hardened_Report.csv",
     mime="text/csv"
 )
