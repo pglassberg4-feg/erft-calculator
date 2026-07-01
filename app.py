@@ -1,12 +1,28 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="ERFT Case Design Calculator", layout="wide")
+st.set_page_config(page_title="ERFT Multi-Account Dashboard", layout="wide")
 
-st.title("🧠 ERFT Case Design Calculator")
+st.title("🧠 ERFT Multi-Account Diagnostic System")
 
 # -------------------------
-# DROPDOWNS
+# SESSION STATE INIT
+# -------------------------
+if "data" not in st.session_state:
+    st.session_state.data = pd.DataFrame({
+        "Account": [],
+        "Value": [],
+        "TaxType": [],
+        "AgeRule": [],
+        "PenaltyPct": [],
+        "FeePct": [],
+        "GrowthType": [],
+        "Loan": [],
+        "Income": []
+    })
+
+# -------------------------
+# OPTIONS
 # -------------------------
 account_types = ["401k","403b","457","IRA","Roth IRA","Brokerage","Annuity","Pension","CD","Cash"]
 tax_types = ["Pre-tax","After-tax","Roth"]
@@ -14,117 +30,151 @@ age_rules = ["None","59.5","62","65","RMD"]
 growth_types = ["Fixed","Indexed","Variable"]
 yesno = ["Yes","No"]
 
-st.sidebar.header("Client Input")
+# -------------------------
+# DATA EDITOR (MULTI-ACCOUNT INPUT)
+# -------------------------
+st.subheader("📥 Client Accounts")
 
-account = st.sidebar.selectbox("Account Type", account_types)
-value = st.sidebar.number_input("Value ($)", min_value=0.0, step=1000.0)
+edited_df = st.data_editor(
+    st.session_state.data,
+    num_rows="dynamic",
+    use_container_width=True,
+    column_config={
+        "Account": st.column_config.SelectboxColumn("Account", options=account_types),
+        "TaxType": st.column_config.SelectboxColumn("Tax Type", options=tax_types),
+        "AgeRule": st.column_config.SelectboxColumn("Age Rule", options=age_rules),
+        "GrowthType": st.column_config.SelectboxColumn("Growth Type", options=growth_types),
+        "Loan": st.column_config.SelectboxColumn("Loan", options=yesno),
+        "Income": st.column_config.SelectboxColumn("Income", options=yesno),
+    }
+)
 
-tax = st.sidebar.selectbox("Tax Type", tax_types)
-age = st.sidebar.selectbox("Age Rule", age_rules)
+st.session_state.data = edited_df
 
-penalty = st.sidebar.number_input("Penalty % (0-1)", min_value=0.0, max_value=1.0, step=0.01)
-fee = st.sidebar.number_input("Fee % (0-1)", min_value=0.0, max_value=1.0, step=0.01)
-
-growth = st.sidebar.selectbox("Growth Type", growth_types)
-loan = st.sidebar.selectbox("Loan Option", yesno)
-income = st.sidebar.selectbox("Income Option", yesno)
+df = edited_df.copy()
 
 # -------------------------
-# ERFT ENGINE
+# SAFETY CHECK
 # -------------------------
+if df.empty:
+    st.warning("Add at least one account to generate ERFT analysis.")
+    st.stop()
 
-def calc_risk(growth):
-    return 3 if growth == "Variable" else 2 if growth == "Indexed" else 1
+# -------------------------
+# SCORING FUNCTIONS
+# -------------------------
+def risk(g): 
+    return 3 if g == "Variable" else 2 if g == "Indexed" else 1
 
-def calc_fees(fee):
-    return 3 if fee > 0.01 else 2 if fee > 0.005 else 1
+def fees(f): 
+    return 3 if f > 0.01 else 2 if f > 0.005 else 1
 
-def calc_tax(tax):
-    return 3 if tax == "Pre-tax" else 2 if tax == "After-tax" else 1
+def taxes(t): 
+    return 3 if t == "Pre-tax" else 2 if t == "After-tax" else 1
 
-def calc_flex(penalty, age):
-    if penalty > 0:
+def flex(p, a): 
+    if p > 0:
         return 3
-    elif age != "None":
+    elif a != "None":
         return 2
-    else:
-        return 1
-
-risk = calc_risk(growth)
-fees = calc_fees(fee)
-tax_score = calc_tax(tax)
-flex = calc_flex(penalty, age)
-
-total = risk + fees + tax_score + flex
+    return 1
 
 # -------------------------
-# BAND + RECOMMENDATION
+# APPLY SCORING
 # -------------------------
+risk_scores = []
+fee_scores = []
+tax_scores = []
+flex_scores = []
+total_scores = []
 
-if total >= 11:
-    band = "🔴 Critical"
-    rec = "URGENT: Major restructuring conversation needed"
-elif total >= 8:
-    band = "🟠 High"
-    rec = "Review & reposition opportunity"
-elif total >= 5:
-    band = "🟡 Moderate"
-    rec = "Optimization potential exists"
+for _, row in df.iterrows():
+    r = risk(row.get("GrowthType","Fixed"))
+    f = fees(row.get("FeePct",0))
+    t = taxes(row.get("TaxType","Pre-tax"))
+    fl = flex(row.get("PenaltyPct",0), row.get("AgeRule","None"))
+
+    risk_scores.append(r)
+    fee_scores.append(f)
+    tax_scores.append(t)
+    flex_scores.append(fl)
+
+    total_scores.append(r + f + t + fl)
+
+df["Risk"] = risk_scores
+df["FeesScore"] = fee_scores
+df["TaxScore"] = tax_scores
+df["FlexScore"] = flex_scores
+df["ERFT_Total"] = total_scores
+
+# -------------------------
+# PORTFOLIO METRICS
+# -------------------------
+df["Value"] = pd.to_numeric(df["Value"], errors="coerce").fillna(0)
+
+total_value = df["Value"].sum()
+
+weighted_erft = (
+    (df["ERFT_Total"] * df["Value"]).sum() / total_value
+    if total_value > 0 else 0
+)
+
+opportunity_gap = max(0, weighted_erft - 4)
+
+# -------------------------
+# RECOMMENDATION ENGINE
+# -------------------------
+if weighted_erft >= 11:
+    rec = "🔴 URGENT: Major restructuring recommended"
+elif weighted_erft >= 8:
+    rec = "🟠 High priority review & repositioning opportunity"
+elif weighted_erft >= 5:
+    rec = "🟡 Moderate optimization potential"
 else:
-    band = "🟢 Low"
-    rec = "System is relatively efficient"
-
-opportunity_gap = max(0, total - 4)
+    rec = "🟢 Low friction household structure"
 
 # -------------------------
-# DISPLAY
+# DASHBOARD
 # -------------------------
+st.divider()
+st.subheader("📊 Household Summary")
 
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3 = st.columns(3)
 
-col1.metric("Risk", risk)
-col2.metric("Fees", fees)
-col3.metric("Taxes", tax_score)
-col4.metric("Flexibility", flex)
+col1.metric("Total Value", f"${total_value:,.0f}")
+col2.metric("Weighted ERFT Score", f"{weighted_erft:.2f}")
+col3.metric("Opportunity Gap", f"{opportunity_gap:.2f}")
 
-st.subheader("Total ERFT Score")
-st.metric("ERFT Score", total)
-
-st.subheader("Classification")
-st.write(band)
-
-st.subheader("Auto Recommendation")
+st.subheader("🧠 Recommendation")
 st.write(rec)
 
-st.subheader("Opportunity Gap Score")
-st.metric("Gap (vs target 4)", opportunity_gap)
+# -------------------------
+# ACCOUNT BREAKDOWN
+# -------------------------
+st.subheader("📋 Account-Level ERFT Breakdown")
+st.dataframe(df, use_container_width=True)
 
 # -------------------------
-# CLIENT REPORT
+# INSIGHT BOX
 # -------------------------
+st.subheader("🔎 Key Insight")
 
-st.divider()
-st.subheader("📄 Client Report (Printable View)")
+highest = df.loc[df["ERFT_Total"].idxmax()] if not df.empty else None
 
-report = f"""
-Client Asset Summary
+if highest is not None:
+    st.info(
+        f"Highest friction account: {highest['Account']} "
+        f"(ERFT {highest['ERFT_Total']}) — primary optimization target."
+    )
 
-Account Type: {account}
-Value: ${value:,.2f}
+# -------------------------
+# DOWNLOAD REPORT
+# -------------------------
+csv = df.to_csv(index=False).encode("utf-8")
 
-ERFT Breakdown:
-- Risk: {risk}
-- Fees: {fees}
-- Taxes: {tax_score}
-- Flexibility: {flex}
-
-Total Score: {total}
-Classification: {band}
-
-Opportunity Gap: {opportunity_gap}
-
-Recommendation:
-{rec}
-"""
-
-st.text_area("Report", report, height=300)
+st.download_button(
+    "⬇️ Download Client ERFT Report (CSV)",
+    data=csv,
+    file_name="erft_report.csv",
+    mime="text/csv"
+)
