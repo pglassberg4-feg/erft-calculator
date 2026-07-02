@@ -13,12 +13,12 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-st.caption("Multi-account diagnostic + scenario planning + client presentation system")
+st.caption("Stable Excel-style advisor system (multi-account + scenario modeling + client presentation)")
 
 st.divider()
 
 # =========================
-# SESSION STATE
+# SESSION STATE (CRITICAL FIX: CLEAN SEPARATION)
 # =========================
 if "base_df" not in st.session_state:
     st.session_state.base_df = pd.DataFrame({
@@ -33,13 +33,26 @@ if "base_df" not in st.session_state:
         "Income": []
     })
 
-if "working_df" not in st.session_state:
-    st.session_state.working_df = st.session_state.base_df.copy()
+if "draft_df" not in st.session_state:
+    st.session_state.draft_df = st.session_state.base_df.copy()
+
+# =========================
+# CONSTANTS
+# =========================
+account_types = ["401k","403b","457","IRA","Roth IRA","Brokerage","Annuity","Pension","CD","Cash"]
+tax_types = ["Pre-tax","After-tax","Roth"]
+age_rules = ["None","59.5","62","65","RMD"]
+growth_types = ["Fixed","Indexed","Variable"]
+yesno = ["Yes","No"]
+
+BENCHMARK = 4.0
 
 # =========================
 # SCORING ENGINE (SINGLE SOURCE OF TRUTH)
 # =========================
 def compute_erft(df):
+    df = df.copy()
+
     def risk(g):
         return 3 if g == "Variable" else 2 if g == "Indexed" else 1
 
@@ -54,8 +67,6 @@ def compute_erft(df):
         if a != "None":
             score += 0.5
         return min(score, 3)
-
-    df = df.copy()
 
     df["ERFT"] = [
         risk(r["GrowthType"]) +
@@ -77,76 +88,95 @@ def clean(df):
     df["FeePct"] = pd.to_numeric(df["FeePct"], errors="coerce").fillna(0)
     df["PenaltyPct"] = pd.to_numeric(df["PenaltyPct"], errors="coerce").fillna(0)
 
+    df["Account"] = df["Account"].fillna("")
     df["TaxType"] = df["TaxType"].fillna("Pre-tax")
-    df["GrowthType"] = df["GrowthType"].fillna("Fixed")
     df["AgeRule"] = df["AgeRule"].fillna("None")
+    df["GrowthType"] = df["GrowthType"].fillna("Fixed")
+    df["Loan"] = df["Loan"].fillna("No")
+    df["Income"] = df["Income"].fillna("No")
 
     return df
 
 # =========================
-# SIDEBAR CONTROLS (WORKSTATION FEEL)
+# VIEW MODE
 # =========================
-st.sidebar.header("Workstation Controls")
-
-view_mode = st.sidebar.radio(
-    "Mode",
-    ["Client View", "Advisor View", "What-If Engine"]
+mode = st.radio(
+    "View Mode",
+    ["Client View", "Advisor View", "What-If Mode"],
+    horizontal=True
 )
 
-auto_save = st.sidebar.checkbox("Auto-save edits", value=False)
-
-st.sidebar.divider()
-
-st.sidebar.caption("Benchmark assumption: Efficient structure ≈ 4.0 ERFT")
-
 # =========================
-# EDITOR (WORKING LAYER)
+# EXCEL-STYLE EDITOR (STABLE STATE MODEL)
 # =========================
-st.subheader("Client Portfolio Input")
+st.subheader("Client Accounts (Excel-Style Input)")
 
 edited = st.data_editor(
-    st.session_state.working_df,
+    st.session_state.draft_df,
     num_rows="dynamic",
     use_container_width=True,
-    key="grid"
+    key="stable_editor",
+    column_config={
+        "Account": st.column_config.SelectboxColumn("Account", options=account_types),
+        "TaxType": st.column_config.SelectboxColumn("Tax Type", options=tax_types),
+        "AgeRule": st.column_config.SelectboxColumn("Age Rule", options=age_rules),
+        "GrowthType": st.column_config.SelectboxColumn("Growth Type", options=growth_types),
+        "Loan": st.column_config.SelectboxColumn("Loan", options=yesno),
+        "Income": st.column_config.SelectboxColumn("Income", options=yesno),
+        "Value": st.column_config.NumberColumn("Value ($)", min_value=0),
+        "FeePct": st.column_config.NumberColumn("Fee (%)", min_value=0, max_value=10, step=0.1),
+        "PenaltyPct": st.column_config.NumberColumn("Penalty (%)", min_value=0, max_value=20, step=0.5),
+    }
 )
 
-if not edited.equals(st.session_state.working_df):
-    st.session_state.working_df = edited.copy()
-    if auto_save:
-        st.session_state.base_df = st.session_state.working_df.copy()
+# ONLY update draft if change detected (prevents rerun clearing bug)
+if not edited.equals(st.session_state.draft_df):
+    st.session_state.draft_df = edited.copy()
 
 # =========================
-# ACTIVE DATA PIPELINE
+# COMMIT / RESET CONTROLS
 # =========================
-base_df = clean(st.session_state.working_df)
-active_df = compute_erft(base_df)
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.button("💾 Commit Changes"):
+        st.session_state.base_df = st.session_state.draft_df.copy()
+        st.success("Saved successfully")
+
+with col2:
+    if st.button("↩️ Reset Draft"):
+        st.session_state.draft_df = st.session_state.base_df.copy()
+        st.warning("Draft reset")
 
 # =========================
-# PORTFOLIO METRICS
+# ACTIVE DATA PIPELINE (SINGLE SOURCE OF TRUTH)
 # =========================
-total_value = active_df["Value"].sum()
+df = clean(st.session_state.draft_df)
+df = compute_erft(df)
+
+total_value = df["Value"].sum()
 
 weighted_erft = (
-    (active_df["ERFT"] * active_df["Value"]).sum() / total_value
+    (df["ERFT"] * df["Value"]).sum() / total_value
     if total_value > 0 else 0
 )
 
-opportunity_gap = max(0, weighted_erft - 4)
+opportunity_gap = max(0, weighted_erft - BENCHMARK)
 
-top = active_df.loc[active_df["ERFT"].idxmax()] if len(active_df) else None
+top = df.loc[df["ERFT"].idxmax()] if len(df) > 0 else None
 
 # =========================
-# WHAT-IF ENGINE
+# WHAT-IF MODE (FIXED ENGINE)
 # =========================
-if view_mode == "What-If Engine":
+if mode == "What-If Mode":
 
-    st.subheader("Scenario Modeling")
+    st.subheader("Scenario Simulator")
 
     fee_shift = st.slider("Fee Reduction (%)", 0.0, 2.0, 0.5, 0.1)
     penalty_shift = st.slider("Penalty Reduction (%)", 0.0, 10.0, 2.0, 0.5)
 
-    sim = base_df.copy()
+    sim = df.copy()
+
     sim["FeePct"] = (sim["FeePct"] - fee_shift).clip(lower=0)
     sim["PenaltyPct"] = (sim["PenaltyPct"] - penalty_shift).clip(lower=0)
 
@@ -161,11 +191,9 @@ if view_mode == "What-If Engine":
 
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("Current ERFT", f"{weighted_erft:.2f}")
-    col2.metric("Simulated ERFT", f"{sim_weighted:.2f}")
+    col1.metric("Current Score", f"{weighted_erft:.2f}")
+    col2.metric("Scenario Score", f"{sim_weighted:.2f}")
     col3.metric("Improvement", f"{weighted_erft - sim_weighted:.2f}")
-
-    st.subheader("Scenario Impact Visualization")
 
     fig, ax = plt.subplots()
     ax.bar(["Current", "Scenario"], [weighted_erft, sim_weighted])
@@ -174,9 +202,9 @@ if view_mode == "What-If Engine":
 # =========================
 # CLIENT VIEW (SIMPLIFIED STORY)
 # =========================
-elif view_mode == "Client View":
+elif mode == "Client View":
 
-    st.subheader("Your Financial Overview")
+    st.subheader("Financial Overview")
 
     c1, c2, c3 = st.columns(3)
 
@@ -184,57 +212,46 @@ elif view_mode == "Client View":
     c2.metric("Efficiency Score", f"{weighted_erft:.2f}")
     c3.metric("Opportunity Gap", f"{opportunity_gap:.2f}")
 
-    st.markdown("### What this means")
+    st.markdown("### What This Means")
 
-    if weighted_erft >= 11:
-        msg = "Your structure shows significant inefficiencies."
-    elif weighted_erft >= 8:
-        msg = "There are meaningful optimization opportunities."
-    elif weighted_erft >= 5:
-        msg = "Moderate improvement potential exists."
-    else:
-        msg = "Your structure is relatively efficient."
+    st.markdown("""
+**Efficiency Score**
+> Measures how optimized your financial structure is based on fees, taxes, growth type, and access to money.
 
-    st.write(msg)
+**Opportunity Gap**
+> Shows how far your current structure is from an efficient baseline (4.0).
+""")
 
     if top is not None:
         st.info(f"Highest friction account: {top['Account']}")
 
 # =========================
-# ADVISOR VIEW (FULL DIAGNOSTICS)
+# ADVISOR VIEW
 # =========================
 else:
 
-    st.subheader("Advisor Diagnostics Panel")
+    st.subheader("Advisor Dashboard")
 
-    st.dataframe(active_df, use_container_width=True)
+    st.dataframe(df, use_container_width=True)
 
     col1, col2 = st.columns(2)
 
     col1.metric("Weighted ERFT", f"{weighted_erft:.2f}")
     col2.metric("Opportunity Gap", f"{opportunity_gap:.2f}")
 
-    st.subheader("Account Friction Map")
+    st.subheader("ERFT by Account")
 
     fig, ax = plt.subplots()
-    ax.bar(active_df["Account"], active_df["ERFT"])
+    ax.bar(df["Account"], df["ERFT"])
     plt.xticks(rotation=45)
     st.pyplot(fig)
 
-    st.subheader("Fee vs Liquidity Pressure")
-
-    fig2, ax2 = plt.subplots()
-    ax2.scatter(active_df["FeePct"], active_df["PenaltyPct"], s=active_df["Value"]/10000)
-    ax2.set_xlabel("Fee %")
-    ax2.set_ylabel("Penalty %")
-    st.pyplot(fig2)
-
 # =========================
-# INSIGHT ENGINE (CROSS-PORTFOLIO)
+# INSIGHT ENGINE
 # =========================
 st.divider()
 
-st.subheader("Key Insight Engine")
+st.subheader("Key Insight")
 
 if top is not None:
     st.success(
@@ -242,5 +259,5 @@ if top is not None:
         f"(ERFT {top['ERFT']:.2f}, ${top['Value']:,.0f})"
     )
 
-st.caption("ERFT measures structural efficiency across fees, taxes, growth type, and liquidity constraints.")
-st.caption("Opportunity Gap = distance from efficient benchmark (4.0).")
+st.caption("ERFT Score = structural efficiency across fees, taxes, growth type, and liquidity constraints.")
+st.caption("Opportunity Gap = distance from efficient baseline (4.0).")
