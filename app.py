@@ -3,11 +3,11 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
+# =========================
+# PAGE CONFIG
+# =========================
 st.set_page_config(page_title="ERFT Advisor Platform", layout="wide")
 
-# =========================
-# HEADER / BRANDING
-# =========================
 st.markdown(
     "<h1 style='text-align: center;'>ERFT Financial Diagnostic Platform</h1>",
     unsafe_allow_html=True
@@ -16,10 +16,10 @@ st.markdown(
 st.divider()
 
 # =========================
-# SESSION STATE INIT
+# SESSION STATE (EXCEL MODEL)
 # =========================
-if "data" not in st.session_state:
-    st.session_state.data = pd.DataFrame({
+if "committed" not in st.session_state:
+    st.session_state.committed = pd.DataFrame({
         "Account": [],
         "Value": [],
         "TaxType": [],
@@ -30,6 +30,9 @@ if "data" not in st.session_state:
         "Loan": [],
         "Income": []
     })
+
+if "draft" not in st.session_state:
+    st.session_state.draft = st.session_state.committed.copy()
 
 # =========================
 # OPTIONS
@@ -43,31 +46,59 @@ yesno = ["Yes","No"]
 # =========================
 # VIEW MODE
 # =========================
-mode = st.radio("View Mode", ["👤 Client View", "🧠 Advisor View", "🔮 What-If Mode"], horizontal=True)
+mode = st.radio(
+    "View Mode",
+    ["👤 Client View", "🧠 Advisor View", "🔮 What-If Mode"],
+    horizontal=True
+)
 
 # =========================
-# DATA INPUT
+# CONTROLS (EXCEL STYLE)
+# =========================
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    if st.button("💾 Commit Changes"):
+        st.session_state.committed = st.session_state.draft.copy()
+        st.success("Changes saved")
+
+with col2:
+    if st.button("↩️ Reset Draft"):
+        st.session_state.draft = st.session_state.committed.copy()
+        st.warning("Draft reset")
+
+with col3:
+    auto_save = st.checkbox("Auto-save edits", value=False)
+
+# =========================
+# DATA EDITOR (STABLE GRID)
 # =========================
 st.subheader("Client Accounts")
 
-df = st.data_editor(
-    st.session_state.data,
+edited = st.data_editor(
+    st.session_state.draft,
     num_rows="dynamic",
     use_container_width=True,
+    key="excel_grid",
     column_config={
-        "Value": st.column_config.NumberColumn("Value ($)", min_value=0),
-        "FeePct": st.column_config.NumberColumn("Fee (%)", min_value=0, max_value=10, step=0.1),
-        "PenaltyPct": st.column_config.NumberColumn("Penalty (%)", min_value=0, max_value=20, step=0.5),
         "Account": st.column_config.SelectboxColumn("Account", options=account_types),
         "TaxType": st.column_config.SelectboxColumn("Tax Type", options=tax_types),
         "AgeRule": st.column_config.SelectboxColumn("Age Rule", options=age_rules),
         "GrowthType": st.column_config.SelectboxColumn("Growth Type", options=growth_types),
         "Loan": st.column_config.SelectboxColumn("Loan", options=yesno),
         "Income": st.column_config.SelectboxColumn("Income", options=yesno),
+        "Value": st.column_config.NumberColumn("Value ($)", min_value=0),
+        "FeePct": st.column_config.NumberColumn("Fee (%)", min_value=0, max_value=10, step=0.1),
+        "PenaltyPct": st.column_config.NumberColumn("Penalty (%)", min_value=0, max_value=20, step=0.5),
     }
 )
 
-st.session_state.data = df.copy()
+if not edited.equals(st.session_state.draft):
+    st.session_state.draft = edited.copy()
+    if auto_save:
+        st.session_state.committed = st.session_state.draft.copy()
+
+df = st.session_state.draft.copy()
 
 if df.empty:
     st.warning("Add at least one account.")
@@ -117,10 +148,6 @@ for _, row in df.iterrows():
     totals.append(r + f + t + fl)
 
 df["ERFT"] = totals
-df["Risk"] = risk_scores
-df["Fees"] = fee_scores
-df["Taxes"] = tax_scores
-df["Flex"] = flex_scores
 
 # =========================
 # PORTFOLIO METRICS
@@ -138,14 +165,14 @@ if mode == "🔮 What-If Mode":
 
     st.subheader("Scenario Simulator")
 
-    reduce_fees = st.slider("Simulated Fee Reduction (%)", 0.0, 2.0, 0.5, 0.1)
-    reduce_penalty = st.slider("Simulated Liquidity Improvement (%)", 0.0, 10.0, 2.0, 0.5)
+    fee_reduction = st.slider("Fee Reduction (%)", 0.0, 2.0, 0.5, 0.1)
+    penalty_reduction = st.slider("Penalty Reduction (%)", 0.0, 10.0, 2.0, 0.5)
 
-    sim_df = df.copy()
-    sim_df["FeePct"] = (sim_df["FeePct"] - reduce_fees).clip(lower=0)
-    sim_df["PenaltyPct"] = (sim_df["PenaltyPct"] - reduce_penalty).clip(lower=0)
+    sim = df.copy()
+    sim["FeePct"] = (sim["FeePct"] - fee_reduction).clip(lower=0)
+    sim["PenaltyPct"] = (sim["PenaltyPct"] - penalty_reduction).clip(lower=0)
 
-    sim_erft = (sim_df["ERFT"] * sim_df["Value"]).sum() / total_value
+    sim_erft = (sim["ERFT"] * sim["Value"]).sum() / total_value
 
     st.metric("Current ERFT", f"{weighted_erft:.2f}")
     st.metric("Simulated ERFT", f"{sim_erft:.2f}")
@@ -158,20 +185,20 @@ elif mode == "👤 Client View":
 
     st.subheader("Your Financial Overview")
 
-    col1, col2, col3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
 
-    col1.metric("Total Assets", f"${total_value:,.0f}")
-    col2.metric("Financial Efficiency Score", f"{weighted_erft:.1f}")
-    col3.metric("Opportunity Gap", f"{gap:.1f}")
+    c1.metric("Total Assets", f"${total_value:,.0f}")
+    c2.metric("Efficiency Score", f"{weighted_erft:.1f}")
+    c3.metric("Opportunity Gap", f"{gap:.1f}")
 
     if weighted_erft >= 11:
-        msg = "Your structure has significant inefficiencies."
+        msg = "Significant structural inefficiencies detected."
     elif weighted_erft >= 8:
-        msg = "There are meaningful optimization opportunities."
+        msg = "Meaningful optimization opportunities exist."
     elif weighted_erft >= 5:
-        msg = "Your plan is generally solid with refinement potential."
+        msg = "Moderate refinement potential."
     else:
-        msg = "Your structure is relatively efficient."
+        msg = "Relatively efficient structure."
 
     st.subheader("What This Means")
     st.write(msg)
@@ -179,7 +206,7 @@ elif mode == "👤 Client View":
     st.info(f"Highest friction account: {top['Account']}")
 
 # =========================
-# ADVISOR VIEW + CHARTS
+# ADVISOR VIEW
 # =========================
 else:
 
@@ -190,41 +217,32 @@ else:
     st.metric("Weighted ERFT", f"{weighted_erft:.2f}")
     st.metric("Opportunity Gap", f"{gap:.2f}")
 
-    st.subheader("ERFT Distribution")
+    st.subheader("ERFT by Account")
 
-    fig1, ax1 = plt.subplots()
-    ax1.bar(df["Account"], df["ERFT"])
+    fig, ax = plt.subplots()
+    ax.bar(df["Account"], df["ERFT"])
     plt.xticks(rotation=45)
-    st.pyplot(fig1)
-
-    st.subheader("Fee vs Penalty Exposure")
-
-    fig2, ax2 = plt.subplots()
-    ax2.scatter(df["FeePct"], df["PenaltyPct"], s=df["Value"]/10000)
-    ax2.set_xlabel("Fee %")
-    ax2.set_ylabel("Penalty %")
-    st.pyplot(fig2)
+    st.pyplot(fig)
 
 # =========================
-# PDF REPORT (AUTO GENERATION)
+# REPORT EXPORT
 # =========================
 st.divider()
-st.subheader("Client Report Export")
 
-report_text = f"""
-ERFT Financial Summary
+report = f"""
+ERFT CLIENT SUMMARY
 
 Total Assets: ${total_value:,.0f}
-Weighted Score: {weighted_erft:.2f}
+Weighted ERFT: {weighted_erft:.2f}
 Opportunity Gap: {gap:.2f}
 
-Highest Friction Account: {top['Account']}
+Top Account: {top['Account']}
 """
 
-st.text_area("Report Preview", report_text, height=200)
+st.text_area("Client Report", report, height=200)
 
 st.download_button(
-    "Download Report (TXT)",
-    report_text,
-    file_name="ERFT_Client_Report.txt"
+    "Download Report",
+    report,
+    file_name="ERFT_Report.txt"
 )
